@@ -37,7 +37,9 @@ jobs:
             if (file && file.status !== "added") problems.push(`The PR should add a new file, not ${file.status} an existing one.`)
 
             const commits = await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: pr.number })
-            const strangers = commits.filter((c) => c.author?.login?.toLowerCase() !== author.toLowerCase())
+            const unlinked = commits.filter((c) => !c.author)
+            const strangers = commits.filter((c) => c.author && c.author.login.toLowerCase() !== author.toLowerCase())
+            if (unlinked.length) problems.push(`${unlinked.length} commit(s) use an email that isn't linked to any GitHub account, so they can't be attributed to @${author}. The easiest fix is the "Propose on GitHub" button, which commits from your account automatically.`)
             if (strangers.length) problems.push(`Every commit must be made by @${author}; ${strangers.length} commit(s) come from another account.`)
 
             if (!problems.length) {
