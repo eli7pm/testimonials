@@ -1,0 +1,68 @@
+name: Verify testimonial
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          SUPABASE_URL: https://ejjaevablbusbfmhsijg.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_qorRv8aXkn4tb51kZNj_Iw_tm_uAXaJ
+        with:
+          script: |
+            // Never checks out or runs PR code: everything is read through the API.
+            const pr = context.payload.pull_request
+            const author = pr.user.login
+            const { owner, repo } = context.repo
+            const problems = []
+
+            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number })
+            const expected = `testimonials/${author}.md`.toLowerCase()
+            if (files.length !== 1) problems.push(`The PR should add exactly one file, but it changes ${files.length}.`)
+            const file = files[0]
+            if (file && file.filename.toLowerCase() !== expected) problems.push(`The file should be \`${expected}\`, named after your GitHub username, but it's \`${file.filename}\`.`)
+            if (file && file.status !== "added") problems.push(`The PR should add a new file, not ${file.status} an existing one.`)
+
+            const commits = await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: pr.number })
+            const strangers = commits.filter((c) => c.author?.login?.toLowerCase() !== author.toLowerCase())
+            if (strangers.length) problems.push(`Every commit must be made by @${author}; ${strangers.length} commit(s) come from another account.`)
+
+            if (!problems.length) {
+              const { data } = await github.rest.repos.getContent({ owner: pr.head.repo.owner.login, repo: pr.head.repo.name, path: file.filename, ref: pr.head.sha })
+              const content = Buffer.from(data.content, "base64").toString("utf8")
+              const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/rpc/verify_testimonial_pr`, {
+                method: "POST",
+                headers: { apikey: process.env.SUPABASE_PUBLISHABLE_KEY, "Content-Type": "application/json" },
+                body: JSON.stringify({ p_handle: author, p_content: content }),
+              })
+              const ok = res.ok && (await res.json()) === true
+              if (!ok) problems.push(`This text doesn't match a testimonial that @${author} submitted on eli7pm.me. Testimonials are by invitation only; if you were invited, submit it there first and use the "Propose on GitHub" button.`)
+            }
+
+            const labels = ["verified", "unverified"]
+            for (const name of labels) {
+              await github.rest.issues.createLabel({ owner, repo, name, color: name === "verified" ? "596022" : "852537" }).catch(() => {})
+            }
+            await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name: problems.length ? "verified" : "unverified" }).catch(() => {})
+            await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: [problems.length ? "unverified" : "verified"] })
+
+            if (problems.length) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: `❌ This pull request couldn't be verified:\n\n${problems.map((p) => `- ${p}`).join("\n")}\n\nClosing it for now.` })
+              await github.rest.pulls.update({ owner, repo, pull_number: pr.number, state: "closed" })
+              core.setFailed(problems.join(" "))
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: `✅ Verified: @${author} submitted this testimonial on eli7pm.me, and every commit is theirs.` })
+            }
