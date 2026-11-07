@@ -1,0 +1,54 @@
+name: Verify testimonial issue
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: verify-issue-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: ${{ !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          SUPABASE_URL: https://ejjaevablbusbfmhsijg.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_qorRv8aXkn4tb51kZNj_Iw_tm_uAXaJ
+        with:
+          script: |
+            const issue = context.payload.issue
+            const author = issue.user.login
+            const { owner, repo } = context.repo
+            const number = issue.number
+
+            if (author.toLowerCase() === owner.toLowerCase() && !/^Testimonial from /.test(issue.title)) return
+
+            const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/rpc/verify_testimonial_pr`, {
+              method: "POST",
+              headers: { apikey: process.env.SUPABASE_PUBLISHABLE_KEY, "Content-Type": "application/json" },
+              body: JSON.stringify({ p_handle: author, p_content: issue.body ?? "" }),
+            })
+            const ok = res.ok && (await res.json()) === true
+
+            for (const name of ["verified", "unverified"]) {
+              await github.rest.issues.createLabel({ owner, repo, name, color: name === "verified" ? "596022" : "852537" }).catch(() => {})
+            }
+            await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name: ok ? "unverified" : "verified" }).catch(() => {})
+            await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [ok ? "verified" : "unverified"] })
+
+            if (ok) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: number, body: `✅ Verified: @${author} submitted this testimonial on eli7pm.me.` })
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number,
+                body: `❌ This doesn't match a testimonial that @${author} submitted on eli7pm.me. Testimonials are by invitation only; if you were invited, submit it there first, then use the "Open GitHub issue" button.\n\nClosing it for now.`,
+              })
+              await github.rest.issues.update({ owner, repo, issue_number: number, state: "closed", state_reason: "not_planned" })
+              core.setFailed(`No matching testimonial from @${author}`)
+            }
