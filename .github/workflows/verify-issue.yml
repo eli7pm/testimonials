@@ -20,6 +20,7 @@ jobs:
         env:
           SUPABASE_URL: https://ejjaevablbusbfmhsijg.supabase.co
           SUPABASE_PUBLISHABLE_KEY: sb_publishable_qorRv8aXkn4tb51kZNj_Iw_tm_uAXaJ
+          PORTFOLIO_DISPATCH_TOKEN: ${{ secrets.PORTFOLIO_DISPATCH_TOKEN }}
         with:
           script: |
             const issue = context.payload.issue
@@ -43,7 +44,21 @@ jobs:
             await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [ok ? "verified" : "unverified"] })
 
             if (ok) {
-              await github.rest.issues.createComment({ owner, repo, issue_number: number, body: `✅ Verified: @${author} submitted this testimonial on eli7pm.me.` })
+              await github.rest.issues.createComment({ owner, repo, issue_number: number, body: `✅ Verified: @${author} submitted this testimonial on eli7pm.me. Thank you!` })
+              await github.rest.issues.update({ owner, repo, issue_number: number, state: "closed", state_reason: "completed" })
+
+              if (!process.env.PORTFOLIO_DISPATCH_TOKEN) return core.notice("PORTFOLIO_DISPATCH_TOKEN not set; run the portfolio's link workflow manually.")
+              const notify = await fetch("https://api.github.com/repos/eli7pm/eli-portfolio/actions/workflows/link-testimonial.yml/dispatches", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${process.env.PORTFOLIO_DISPATCH_TOKEN}`,
+                  Accept: "application/vnd.github+json",
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ ref: "main", inputs: { issue: String(number) } }),
+              })
+              if (notify.ok) core.notice(`Notified eli-portfolio to link issue #${number}`)
+              else core.warning(`Couldn't notify eli-portfolio: ${notify.status} ${await notify.text()}`)
             } else {
               await github.rest.issues.createComment({
                 owner, repo, issue_number: number,
